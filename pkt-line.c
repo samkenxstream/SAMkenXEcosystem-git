@@ -1,6 +1,10 @@
 #include "cache.h"
 #include "pkt-line.h"
+#include "gettext.h"
+#include "hex.h"
 #include "run-command.h"
+#include "wrapper.h"
+#include "write-or-die.h"
 
 char packet_buffer[LARGE_PACKET_MAX];
 static const char *packet_trace_prefix = "git";
@@ -309,7 +313,8 @@ int write_packetized_from_fd_no_flush(int fd_in, int fd_out)
 	return err;
 }
 
-int write_packetized_from_buf_no_flush(const char *src_in, size_t len, int fd_out)
+int write_packetized_from_buf_no_flush_count(const char *src_in, size_t len,
+					     int fd_out, int *packet_counter)
 {
 	int err = 0;
 	size_t bytes_written = 0;
@@ -324,6 +329,8 @@ int write_packetized_from_buf_no_flush(const char *src_in, size_t len, int fd_ou
 			break;
 		err = packet_write_gently(fd_out, src_in + bytes_written, bytes_to_write);
 		bytes_written += bytes_to_write;
+		if (packet_counter)
+			(*packet_counter)++;
 	}
 	return err;
 }

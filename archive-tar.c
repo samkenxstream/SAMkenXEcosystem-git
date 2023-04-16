@@ -1,13 +1,17 @@
 /*
  * Copyright (c) 2005, 2006 Rene Scharfe
  */
-#include "cache.h"
+#include "git-compat-util.h"
+#include "alloc.h"
 #include "config.h"
+#include "gettext.h"
+#include "hex.h"
 #include "tar.h"
 #include "archive.h"
 #include "object-store.h"
 #include "streaming.h"
 #include "run-command.h"
+#include "write-or-die.h"
 
 #define RECORDSIZE	(512)
 #define BLOCKSIZE	(RECORDSIZE * 20)
@@ -366,7 +370,8 @@ static struct archiver *find_tar_filter(const char *name, size_t len)
 	return NULL;
 }
 
-static int tar_filter_config(const char *var, const char *value, void *data)
+static int tar_filter_config(const char *var, const char *value,
+			     void *data UNUSED)
 {
 	struct archiver *ar;
 	const char *name;
@@ -420,7 +425,7 @@ static int git_tar_config(const char *var, const char *value, void *cb)
 	return tar_filter_config(var, value, cb);
 }
 
-static int write_tar_archive(const struct archiver *ar,
+static int write_tar_archive(const struct archiver *ar UNUSED,
 			     struct archiver_args *args)
 {
 	int err = 0;
@@ -497,6 +502,7 @@ static int write_tar_filter_archive(const struct archiver *ar,
 	strvec_push(&filter.args, cmd.buf);
 	filter.use_shell = 1;
 	filter.in = -1;
+	filter.silent_exec_failure = 1;
 
 	if (start_command(&filter) < 0)
 		die_errno(_("unable to start '%s' filter"), cmd.buf);

@@ -1,6 +1,8 @@
 #include "builtin.h"
 #include "cache.h"
 #include "config.h"
+#include "gettext.h"
+#include "hex.h"
 #include "refs.h"
 #include "object-store.h"
 #include "object.h"
@@ -9,7 +11,9 @@
 #include "parse-options.h"
 
 static const char * const show_ref_usage[] = {
-	N_("git show-ref [-q | --quiet] [--verify] [--head] [-d | --dereference] [-s | --hash[=<n>]] [--abbrev[=<n>]] [--tags] [--heads] [--] [<pattern>...]"),
+	N_("git show-ref [-q | --quiet] [--verify] [--head] [-d | --dereference]\n"
+	   "             [-s | --hash[=<n>]] [--abbrev[=<n>]] [--tags]\n"
+	   "             [--heads] [--] [<pattern>...]"),
 	N_("git show-ref --exclude-existing[=<pattern>]"),
 	NULL
 };
@@ -24,14 +28,14 @@ static void show_one(const char *refname, const struct object_id *oid)
 	const char *hex;
 	struct object_id peeled;
 
-	if (!has_object_file(oid))
+	if (!repo_has_object_file(the_repository, oid))
 		die("git show-ref: bad ref %s (%s)", refname,
 		    oid_to_hex(oid));
 
 	if (quiet)
 		return;
 
-	hex = find_unique_abbrev(oid, abbrev);
+	hex = repo_find_unique_abbrev(the_repository, oid, abbrev);
 	if (hash_only)
 		printf("%s\n", hex);
 	else
@@ -41,13 +45,13 @@ static void show_one(const char *refname, const struct object_id *oid)
 		return;
 
 	if (!peel_iterated_oid(oid, &peeled)) {
-		hex = find_unique_abbrev(&peeled, abbrev);
+		hex = repo_find_unique_abbrev(the_repository, &peeled, abbrev);
 		printf("%s %s^{}\n", hex, refname);
 	}
 }
 
 static int show_ref(const char *refname, const struct object_id *oid,
-		    int flag, void *cbdata)
+		    int flag UNUSED, void *cbdata UNUSED)
 {
 	if (show_head && !strcmp(refname, "HEAD"))
 		goto match;
@@ -77,8 +81,9 @@ match:
 	return 0;
 }
 
-static int add_existing(const char *refname, const struct object_id *oid,
-			int flag, void *cbdata)
+static int add_existing(const char *refname,
+			const struct object_id *oid UNUSED,
+			int flag UNUSED, void *cbdata)
 {
 	struct string_list *list = (struct string_list *)cbdata;
 	string_list_insert(list, refname);

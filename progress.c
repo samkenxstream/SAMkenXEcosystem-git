@@ -10,7 +10,6 @@
 
 #define GIT_TEST_PROGRESS_ONLY
 #include "cache.h"
-#include "gettext.h"
 #include "progress.h"
 #include "strbuf.h"
 #include "trace.h"
@@ -59,7 +58,7 @@ void progress_test_force_update(void)
 }
 
 
-static void progress_interval(int signum)
+static void progress_interval(int signum UNUSED)
 {
 	progress_update = 1;
 }

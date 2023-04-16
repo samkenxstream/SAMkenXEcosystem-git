@@ -1,5 +1,8 @@
-#include "builtin.h"
 #include "cache.h"
+#include "alloc.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "parse-options.h"
 #include "refs.h"
 #include "wildmatch.h"
@@ -13,7 +16,6 @@
 #include "ref-filter.h"
 #include "revision.h"
 #include "utf8.h"
-#include "git-compat-util.h"
 #include "version.h"
 #include "trailer.h"
 #include "wt-status.h"
@@ -89,7 +91,7 @@ struct ref_to_worktree_entry {
 	struct worktree *wt; /* key is wt->head_ref */
 };
 
-static int ref_to_worktree_map_cmpfnc(const void *unused_lookupdata,
+static int ref_to_worktree_map_cmpfnc(const void *lookupdata UNUSED,
 				      const struct hashmap_entry *eptr,
 				      const struct hashmap_entry *kptr,
 				      const void *keydata_aka_refname)
@@ -158,6 +160,7 @@ enum atom_type {
 	ATOM_THEN,
 	ATOM_ELSE,
 	ATOM_REST,
+	ATOM_AHEADBEHIND,
 };
 
 /*
@@ -228,6 +231,22 @@ static int strbuf_addf_ret(struct strbuf *sb, int ret, const char *fmt, ...)
 	return ret;
 }
 
+static int err_no_arg(struct strbuf *sb, const char *name)
+{
+	size_t namelen = strchrnul(name, ':') - name;
+	strbuf_addf(sb, _("%%(%.*s) does not take arguments"),
+		    (int)namelen, name);
+	return -1;
+}
+
+static int err_bad_arg(struct strbuf *sb, const char *name, const char *arg)
+{
+	size_t namelen = strchrnul(name, ':') - name;
+	strbuf_addf(sb, _("unrecognized %%(%.*s) argument: %s"),
+		    (int)namelen, name, arg);
+	return -1;
+}
+
 static int color_atom_parser(struct ref_format *format, struct used_atom *atom,
 			     const char *color_value, struct strbuf *err)
 {
@@ -262,11 +281,12 @@ static int refname_atom_parser_internal(struct refname_atom *atom, const char *a
 		if (strtol_i(arg, 10, &atom->rstrip))
 			return strbuf_addf_ret(err, -1, _("Integer value expected refname:rstrip=%s"), arg);
 	} else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), name, arg);
+		return err_bad_arg(err, name, arg);
 	return 0;
 }
 
-static int remote_ref_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int remote_ref_atom_parser(struct ref_format *format UNUSED,
+				  struct used_atom *atom,
 				  const char *arg, struct strbuf *err)
 {
 	struct string_list params = STRING_LIST_INIT_DUP;
@@ -313,11 +333,12 @@ static int remote_ref_atom_parser(struct ref_format *format, struct used_atom *a
 	return 0;
 }
 
-static int objecttype_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int objecttype_atom_parser(struct ref_format *format UNUSED,
+				  struct used_atom *atom,
 				  const char *arg, struct strbuf *err)
 {
 	if (arg)
-		return strbuf_addf_ret(err, -1, _("%%(objecttype) does not take arguments"));
+		return err_no_arg(err, "objecttype");
 	if (*atom->name == '*')
 		oi_deref.info.typep = &oi_deref.type;
 	else
@@ -325,7 +346,8 @@ static int objecttype_atom_parser(struct ref_format *format, struct used_atom *a
 	return 0;
 }
 
-static int objectsize_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int objectsize_atom_parser(struct ref_format *format UNUSED,
+				  struct used_atom *atom,
 				  const char *arg, struct strbuf *err)
 {
 	if (!arg) {
@@ -341,15 +363,16 @@ static int objectsize_atom_parser(struct ref_format *format, struct used_atom *a
 		else
 			oi.info.disk_sizep = &oi.disk_size;
 	} else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), "objectsize", arg);
+		return err_bad_arg(err, "objectsize", arg);
 	return 0;
 }
 
-static int deltabase_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int deltabase_atom_parser(struct ref_format *format UNUSED,
+				 struct used_atom *atom,
 				 const char *arg, struct strbuf *err)
 {
 	if (arg)
-		return strbuf_addf_ret(err, -1, _("%%(deltabase) does not take arguments"));
+		return err_no_arg(err, "deltabase");
 	if (*atom->name == '*')
 		oi_deref.info.delta_base_oid = &oi_deref.delta_base_oid;
 	else
@@ -357,16 +380,18 @@ static int deltabase_atom_parser(struct ref_format *format, struct used_atom *at
 	return 0;
 }
 
-static int body_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int body_atom_parser(struct ref_format *format UNUSED,
+			    struct used_atom *atom,
 			    const char *arg, struct strbuf *err)
 {
 	if (arg)
-		return strbuf_addf_ret(err, -1, _("%%(body) does not take arguments"));
+		return err_no_arg(err, "body");
 	atom->u.contents.option = C_BODY_DEP;
 	return 0;
 }
 
-static int subject_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int subject_atom_parser(struct ref_format *format UNUSED,
+			       struct used_atom *atom,
 			       const char *arg, struct strbuf *err)
 {
 	if (!arg)
@@ -374,11 +399,12 @@ static int subject_atom_parser(struct ref_format *format, struct used_atom *atom
 	else if (!strcmp(arg, "sanitize"))
 		atom->u.contents.option = C_SUB_SANITIZE;
 	else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), "subject", arg);
+		return err_bad_arg(err, "subject", arg);
 	return 0;
 }
 
-static int trailers_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int trailers_atom_parser(struct ref_format *format UNUSED,
+				struct used_atom *atom,
 				const char *arg, struct strbuf *err)
 {
 	atom->u.contents.trailer_opts.no_divider = 1;
@@ -428,23 +454,25 @@ static int contents_atom_parser(struct ref_format *format, struct used_atom *ato
 		if (strtoul_ui(arg, 10, &atom->u.contents.nlines))
 			return strbuf_addf_ret(err, -1, _("positive value expected contents:lines=%s"), arg);
 	} else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), "contents", arg);
+		return err_bad_arg(err, "contents", arg);
 	return 0;
 }
 
-static int raw_atom_parser(struct ref_format *format, struct used_atom *atom,
-				const char *arg, struct strbuf *err)
+static int raw_atom_parser(struct ref_format *format UNUSED,
+			   struct used_atom *atom,
+			   const char *arg, struct strbuf *err)
 {
 	if (!arg)
 		atom->u.raw_data.option = RAW_BARE;
 	else if (!strcmp(arg, "size"))
 		atom->u.raw_data.option = RAW_LENGTH;
 	else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), "raw", arg);
+		return err_bad_arg(err, "raw", arg);
 	return 0;
 }
 
-static int oid_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int oid_atom_parser(struct ref_format *format UNUSED,
+			   struct used_atom *atom,
 			   const char *arg, struct strbuf *err)
 {
 	if (!arg)
@@ -459,11 +487,12 @@ static int oid_atom_parser(struct ref_format *format, struct used_atom *atom,
 		if (atom->u.oid.length < MINIMUM_ABBREV)
 			atom->u.oid.length = MINIMUM_ABBREV;
 	} else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), atom->name, arg);
+		return err_bad_arg(err, atom->name, arg);
 	return 0;
 }
 
-static int person_email_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int person_email_atom_parser(struct ref_format *format UNUSED,
+				    struct used_atom *atom,
 				    const char *arg, struct strbuf *err)
 {
 	if (!arg)
@@ -473,11 +502,12 @@ static int person_email_atom_parser(struct ref_format *format, struct used_atom 
 	else if (!strcmp(arg, "localpart"))
 		atom->u.email_option.option = EO_LOCALPART;
 	else
-		return strbuf_addf_ret(err, -1, _("unrecognized email option: %s"), arg);
+		return err_bad_arg(err, atom->name, arg);
 	return 0;
 }
 
-static int refname_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int refname_atom_parser(struct ref_format *format UNUSED,
+			       struct used_atom *atom,
 			       const char *arg, struct strbuf *err)
 {
 	return refname_atom_parser_internal(&atom->u.refname, arg, atom->name, err);
@@ -494,7 +524,8 @@ static align_type parse_align_position(const char *s)
 	return -1;
 }
 
-static int align_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int align_atom_parser(struct ref_format *format UNUSED,
+			     struct used_atom *atom,
 			     const char *arg, struct strbuf *err)
 {
 	struct align *align = &atom->u.align;
@@ -546,7 +577,8 @@ static int align_atom_parser(struct ref_format *format, struct used_atom *atom,
 	return 0;
 }
 
-static int if_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int if_atom_parser(struct ref_format *format UNUSED,
+			  struct used_atom *atom,
 			  const char *arg, struct strbuf *err)
 {
 	if (!arg) {
@@ -557,22 +589,41 @@ static int if_atom_parser(struct ref_format *format, struct used_atom *atom,
 	} else if (skip_prefix(arg, "notequals=", &atom->u.if_then_else.str)) {
 		atom->u.if_then_else.cmp_status = COMPARE_UNEQUAL;
 	} else
-		return strbuf_addf_ret(err, -1, _("unrecognized %%(%s) argument: %s"), "if", arg);
+		return err_bad_arg(err, "if", arg);
 	return 0;
 }
 
-static int rest_atom_parser(struct ref_format *format, struct used_atom *atom,
+static int rest_atom_parser(struct ref_format *format,
+			    struct used_atom *atom UNUSED,
 			    const char *arg, struct strbuf *err)
 {
 	if (arg)
-		return strbuf_addf_ret(err, -1, _("%%(rest) does not take arguments"));
-	format->use_rest = 1;
+		return err_no_arg(err, "rest");
 	return 0;
 }
 
-static int head_atom_parser(struct ref_format *format, struct used_atom *atom,
-			    const char *arg, struct strbuf *unused_err)
+static int ahead_behind_atom_parser(struct ref_format *format, struct used_atom *atom,
+				    const char *arg, struct strbuf *err)
 {
+	struct string_list_item *item;
+
+	if (!arg)
+		return strbuf_addf_ret(err, -1, _("expected format: %%(ahead-behind:<committish>)"));
+
+	item = string_list_append(&format->bases, arg);
+	item->util = lookup_commit_reference_by_name(arg);
+	if (!item->util)
+		die("failed to find '%s'", arg);
+
+	return 0;
+}
+
+static int head_atom_parser(struct ref_format *format UNUSED,
+			    struct used_atom *atom,
+			    const char *arg, struct strbuf *err)
+{
+	if (arg)
+		return err_no_arg(err, "HEAD");
 	atom->u.head = resolve_refdup("HEAD", RESOLVE_REF_READING, NULL, NULL);
 	return 0;
 }
@@ -627,6 +678,7 @@ static struct {
 	[ATOM_THEN] = { "then", SOURCE_NONE },
 	[ATOM_ELSE] = { "else", SOURCE_NONE },
 	[ATOM_REST] = { "rest", SOURCE_NONE, FIELD_STR, rest_atom_parser },
+	[ATOM_AHEADBEHIND] = { "ahead-behind", SOURCE_OTHER, FIELD_STR, ahead_behind_atom_parser },
 	/*
 	 * Please update $__git_ref_fieldlist in git-completion.bash
 	 * when you add new atoms
@@ -773,7 +825,7 @@ static void quote_formatting(struct strbuf *s, const char *str, ssize_t len, int
 }
 
 static int append_atom(struct atom_value *v, struct ref_formatting_state *state,
-		       struct strbuf *unused_err)
+		       struct strbuf *err UNUSED)
 {
 	/*
 	 * Quote formatting is only done when the stack has a single
@@ -823,7 +875,7 @@ static void end_align_handler(struct ref_formatting_stack **stack)
 }
 
 static int align_atom_handler(struct atom_value *atomv, struct ref_formatting_state *state,
-			      struct strbuf *unused_err)
+			      struct strbuf *err UNUSED)
 {
 	struct ref_formatting_stack *new_stack;
 
@@ -870,7 +922,7 @@ static void if_then_else_handler(struct ref_formatting_stack **stack)
 }
 
 static int if_atom_handler(struct atom_value *atomv, struct ref_formatting_state *state,
-			   struct strbuf *unused_err)
+			   struct strbuf *err UNUSED)
 {
 	struct ref_formatting_stack *new_stack;
 	struct if_then_else *if_then_else = xcalloc(1,
@@ -897,7 +949,8 @@ static int is_empty(struct strbuf *buf)
 	return cur == end;
  }
 
-static int then_atom_handler(struct atom_value *atomv, struct ref_formatting_state *state,
+static int then_atom_handler(struct atom_value *atomv UNUSED,
+			     struct ref_formatting_state *state,
 			     struct strbuf *err)
 {
 	struct ref_formatting_stack *cur = state->stack;
@@ -934,7 +987,8 @@ static int then_atom_handler(struct atom_value *atomv, struct ref_formatting_sta
 	return 0;
 }
 
-static int else_atom_handler(struct atom_value *atomv, struct ref_formatting_state *state,
+static int else_atom_handler(struct atom_value *atomv UNUSED,
+			     struct ref_formatting_state *state,
 			     struct strbuf *err)
 {
 	struct ref_formatting_stack *prev = state->stack;
@@ -955,7 +1009,8 @@ static int else_atom_handler(struct atom_value *atomv, struct ref_formatting_sta
 	return 0;
 }
 
-static int end_atom_handler(struct atom_value *atomv, struct ref_formatting_state *state,
+static int end_atom_handler(struct atom_value *atomv UNUSED,
+			    struct ref_formatting_state *state,
 			    struct strbuf *err)
 {
 	struct ref_formatting_stack *current = state->stack;
@@ -1057,9 +1112,11 @@ static const char *do_grab_oid(const char *field, const struct object_id *oid,
 	case O_FULL:
 		return oid_to_hex(oid);
 	case O_LENGTH:
-		return find_unique_abbrev(oid, atom->u.oid.length);
+		return repo_find_unique_abbrev(the_repository, oid,
+					       atom->u.oid.length);
 	case O_SHORT:
-		return find_unique_abbrev(oid, DEFAULT_ABBREV);
+		return repo_find_unique_abbrev(the_repository, oid,
+					       DEFAULT_ABBREV);
 	default:
 		BUG("unknown %%(%s) option", field);
 	}
@@ -1191,7 +1248,7 @@ static const char *copy_name(const char *buf)
 {
 	const char *cp;
 	for (cp = buf; *cp && *cp != '\n'; cp++) {
-		if (!strncmp(cp, " <", 2))
+		if (starts_with(cp, " <"))
 			return xmemdupz(buf, cp - buf);
 	}
 	return xstrdup("");
@@ -1358,6 +1415,7 @@ static void find_subpos(const char *buf,
 
 	/* parse signature first; we might not even have a subject line */
 	parse_signature(buf, end - buf, &payload, &signature);
+	strbuf_release(&payload);
 
 	/* skip past header until we hit empty line */
 	while (*buf && *buf != '\n') {
@@ -1375,12 +1433,12 @@ static void find_subpos(const char *buf,
 	/* subject is first non-empty line */
 	*sub = buf;
 	/* subject goes to first empty line before signature begins */
-	if ((eol = strstr(*sub, "\n\n"))) {
+	if ((eol = strstr(*sub, "\n\n")) ||
+	    (eol = strstr(*sub, "\r\n\r\n"))) {
 		eol = eol < sigstart ? eol : sigstart;
-	/* check if message uses CRLF */
-	} else if (! (eol = strstr(*sub, "\r\n\r\n"))) {
+	} else {
 		/* treat whole message as subject */
-		eol = strrchr(*sub, '\0');
+		eol = sigstart;
 	}
 	buf = eol;
 	*sublen = buf - *sub;
@@ -1722,6 +1780,8 @@ char *get_head_description(void)
 	} else
 		strbuf_addstr(&desc, _("(no branch)"));
 
+	wt_status_state_free_buffers(&state);
+
 	return strbuf_detach(&desc, NULL);
 }
 
@@ -1801,7 +1861,7 @@ static void lazy_init_worktree_map(void)
 	populate_worktree_map(&(ref_to_worktree_map.map), ref_to_worktree_map.worktrees);
 }
 
-static char *get_worktree_path(const struct used_atom *atom, const struct ref_array_item *ref)
+static char *get_worktree_path(const struct ref_array_item *ref)
 {
 	struct hashmap_entry entry, *e;
 	struct ref_to_worktree_entry *lookup_result;
@@ -1827,6 +1887,7 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 	struct object *obj;
 	int i;
 	struct object_info empty = OBJECT_INFO_INIT;
+	int ahead_behind_atoms = 0;
 
 	CALLOC_ARRAY(ref->value, used_atom_cnt);
 
@@ -1860,7 +1921,7 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 			refname = get_refname(atom, ref);
 		else if (atom_type == ATOM_WORKTREEPATH) {
 			if (ref->kind == FILTER_REFS_BRANCHES)
-				v->s = get_worktree_path(atom, ref);
+				v->s = get_worktree_path(ref);
 			else
 				v->s = xstrdup("");
 			continue;
@@ -1956,6 +2017,16 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 				v->s = xstrdup(ref->rest);
 			else
 				v->s = xstrdup("");
+			continue;
+		} else if (atom_type == ATOM_AHEADBEHIND) {
+			if (ref->counts) {
+				const struct ahead_behind_count *count;
+				count = ref->counts[ahead_behind_atoms++];
+				v->s = xstrfmt("%d %d", count->ahead, count->behind);
+			} else {
+				/* Not a commit. */
+				v->s = xstrdup("");
+			}
 			continue;
 		} else
 			continue;
@@ -2126,8 +2197,9 @@ static int for_each_fullref_in_pattern(struct ref_filter *filter,
 		return for_each_fullref_in("", cb, cb_data);
 	}
 
-	return for_each_fullref_in_prefixes(NULL, filter->name_patterns,
-					    cb, cb_data);
+	return refs_for_each_fullref_in_prefixes(get_main_ref_store(the_repository),
+						 NULL, filter->name_patterns,
+						 cb, cb_data);
 }
 
 /*
@@ -2306,6 +2378,7 @@ static void free_array_item(struct ref_array_item *item)
 			free((char *)item->value[i].s);
 		free(item->value);
 	}
+	free(item->counts);
 	free(item);
 }
 
@@ -2334,6 +2407,8 @@ void ref_array_clear(struct ref_array *array)
 		free_worktrees(ref_to_worktree_map.worktrees);
 		ref_to_worktree_map.worktrees = NULL;
 	}
+
+	FREE_AND_NULL(array->counts);
 }
 
 #define EXCLUDE_REACHED 0
@@ -2342,33 +2417,22 @@ static void reach_filter(struct ref_array *array,
 			 struct commit_list *check_reachable,
 			 int include_reached)
 {
-	struct rev_info revs;
 	int i, old_nr;
 	struct commit **to_clear;
-	struct commit_list *cr;
 
 	if (!check_reachable)
 		return;
 
 	CALLOC_ARRAY(to_clear, array->nr);
-
-	repo_init_revisions(the_repository, &revs, NULL);
-
 	for (i = 0; i < array->nr; i++) {
 		struct ref_array_item *item = array->items[i];
-		add_pending_object(&revs, &item->commit->object, item->refname);
 		to_clear[i] = item->commit;
 	}
 
-	for (cr = check_reachable; cr; cr = cr->next) {
-		struct commit *merge_commit = cr->item;
-		merge_commit->object.flags |= UNINTERESTING;
-		add_pending_object(&revs, &merge_commit->object, "");
-	}
-
-	revs.limited = 1;
-	if (prepare_revision_walk(&revs))
-		die(_("revision walk setup failed"));
+	tips_reachable_from_bases(the_repository,
+				  check_reachable,
+				  to_clear, array->nr,
+				  UNINTERESTING);
 
 	old_nr = array->nr;
 	array->nr = 0;
@@ -2392,8 +2456,48 @@ static void reach_filter(struct ref_array *array,
 		clear_commit_marks(merge_commit, ALL_REV_FLAGS);
 	}
 
-	release_revisions(&revs);
 	free(to_clear);
+}
+
+void filter_ahead_behind(struct repository *r,
+			 struct ref_format *format,
+			 struct ref_array *array)
+{
+	struct commit **commits;
+	size_t commits_nr = format->bases.nr + array->nr;
+
+	if (!format->bases.nr || !array->nr)
+		return;
+
+	ALLOC_ARRAY(commits, commits_nr);
+	for (size_t i = 0; i < format->bases.nr; i++)
+		commits[i] = format->bases.items[i].util;
+
+	ALLOC_ARRAY(array->counts, st_mult(format->bases.nr, array->nr));
+
+	commits_nr = format->bases.nr;
+	array->counts_nr = 0;
+	for (size_t i = 0; i < array->nr; i++) {
+		const char *name = array->items[i]->refname;
+		commits[commits_nr] = lookup_commit_reference_by_name(name);
+
+		if (!commits[commits_nr])
+			continue;
+
+		CALLOC_ARRAY(array->items[i]->counts, format->bases.nr);
+		for (size_t j = 0; j < format->bases.nr; j++) {
+			struct ahead_behind_count *count;
+			count = &array->counts[array->counts_nr++];
+			count->tip_index = commits_nr;
+			count->base_index = j;
+
+			array->items[i]->counts[j] = count;
+		}
+		commits_nr++;
+	}
+
+	ahead_behind(r, commits, commits_nr, array->counts, array->counts_nr);
+	free(commits);
 }
 
 /*
@@ -2743,7 +2847,7 @@ int parse_opt_merge_filter(const struct option *opt, const char *arg, int unset)
 
 	BUG_ON_OPT_NEG(unset);
 
-	if (get_oid(arg, &oid))
+	if (repo_get_oid(the_repository, arg, &oid))
 		die(_("malformed object name %s"), arg);
 
 	merge_commit = lookup_commit_reference_gently(the_repository, &oid, 0);

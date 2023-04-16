@@ -1,9 +1,14 @@
 #include "cache.h"
+#include "abspath.h"
+#include "alloc.h"
 #include "config.h"
+#include "environment.h"
 #include "pkt-line.h"
 #include "run-command.h"
+#include "setup.h"
 #include "strbuf.h"
 #include "string-list.h"
+#include "wrapper.h"
 
 #ifdef NO_INITGROUPS
 #define initgroups(x, y) (0) /* nothing */
@@ -928,7 +933,7 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		add_child(&cld, addr, addrlen);
 }
 
-static void child_handler(int signo)
+static void child_handler(int signo UNUSED)
 {
 	/*
 	 * Otherwise empty handler because systemcalls will get interrupted

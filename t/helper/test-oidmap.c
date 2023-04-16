@@ -1,6 +1,8 @@
 #include "test-tool.h"
 #include "cache.h"
+#include "hex.h"
 #include "oidmap.h"
+#include "setup.h"
 #include "strbuf.h"
 
 /* key is an oid and value is a name (could be a refname for example) */
@@ -21,7 +23,7 @@ struct test_entry {
  * iterate -> oidkey1 namevalue1\noidkey2 namevalue2\n...
  *
  */
-int cmd__oidmap(int argc, const char **argv)
+int cmd__oidmap(int argc UNUSED, const char **argv UNUSED)
 {
 	struct strbuf line = STRBUF_INIT;
 	struct oidmap map = OIDMAP_INIT;
@@ -49,7 +51,7 @@ int cmd__oidmap(int argc, const char **argv)
 
 		if (!strcmp("put", cmd) && p1 && p2) {
 
-			if (get_oid(p1, &oid)) {
+			if (repo_get_oid(the_repository, p1, &oid)) {
 				printf("Unknown oid: %s\n", p1);
 				continue;
 			}
@@ -67,7 +69,7 @@ int cmd__oidmap(int argc, const char **argv)
 
 		} else if (!strcmp("get", cmd) && p1) {
 
-			if (get_oid(p1, &oid)) {
+			if (repo_get_oid(the_repository, p1, &oid)) {
 				printf("Unknown oid: %s\n", p1);
 				continue;
 			}
@@ -80,7 +82,7 @@ int cmd__oidmap(int argc, const char **argv)
 
 		} else if (!strcmp("remove", cmd) && p1) {
 
-			if (get_oid(p1, &oid)) {
+			if (repo_get_oid(the_repository, p1, &oid)) {
 				printf("Unknown oid: %s\n", p1);
 				continue;
 			}

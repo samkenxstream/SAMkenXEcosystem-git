@@ -7,6 +7,9 @@
 #if (PCRE2_MAJOR >= 10 && PCRE2_MINOR >= 36) || PCRE2_MAJOR >= 11
 #define GIT_PCRE2_VERSION_10_36_OR_HIGHER
 #endif
+#if (PCRE2_MAJOR >= 10 && PCRE2_MINOR >= 35) || PCRE2_MAJOR >= 11
+#define GIT_PCRE2_VERSION_10_35_OR_HIGHER
+#endif
 #if (PCRE2_MAJOR >= 10 && PCRE2_MINOR >= 34) || PCRE2_MAJOR >= 11
 #define GIT_PCRE2_VERSION_10_34_OR_HIGHER
 #endif
@@ -151,7 +154,6 @@ struct grep_opt {
 #define GREP_BINARY_TEXT	2
 	int binary;
 	int allow_textconv;
-	int extended;
 	int use_reflog_filter;
 	int relative;
 	int pathname;

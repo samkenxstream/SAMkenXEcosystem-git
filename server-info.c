@@ -1,5 +1,8 @@
 #include "cache.h"
+#include "alloc.h"
 #include "dir.h"
+#include "environment.h"
+#include "hex.h"
 #include "repository.h"
 #include "refs.h"
 #include "object.h"
@@ -8,6 +11,7 @@
 #include "packfile.h"
 #include "object-store.h"
 #include "strbuf.h"
+#include "wrapper.h"
 
 struct update_info_ctx {
 	FILE *cur_fp;
@@ -147,7 +151,8 @@ out:
 }
 
 static int add_info_ref(const char *path, const struct object_id *oid,
-			int flag, void *cb_data)
+			int flag UNUSED,
+			void *cb_data)
 {
 	struct update_info_ctx *uic = cb_data;
 	struct object *o = parse_object(the_repository, oid);

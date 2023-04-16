@@ -1,5 +1,7 @@
 #include "cache.h"
 #include "config.h"
+#include "gettext.h"
+#include "hex.h"
 #include "object-store.h"
 #include "attr.h"
 #include "run-command.h"
@@ -9,6 +11,7 @@
 #include "sub-process.h"
 #include "utf8.h"
 #include "ll-merge.h"
+#include "wrapper.h"
 
 /*
  * convert.c - convert a file when checking it out and checking it in.
@@ -619,7 +622,7 @@ struct filter_params {
 	const char *path;
 };
 
-static int filter_buffer_or_fd(int in, int out, void *data)
+static int filter_buffer_or_fd(int in UNUSED, int out, void *data)
 {
 	/*
 	 * Spawn cmd and feed the buffer contents through its stdin.
@@ -1008,7 +1011,7 @@ static int apply_filter(const char *path, const char *src, size_t len,
 	return 0;
 }
 
-static int read_convert_config(const char *var, const char *value, void *cb)
+static int read_convert_config(const char *var, const char *value, void *cb UNUSED)
 {
 	const char *key, *name;
 	size_t namelen;
@@ -1308,7 +1311,7 @@ void convert_attrs(struct index_state *istate,
 		git_config(read_convert_config, NULL);
 	}
 
-	git_check_attr(istate, path, check);
+	git_check_attr(istate, NULL, path, check);
 	ccheck = check->items;
 	ca->crlf_action = git_path_check_crlf(ccheck + 4);
 	if (ca->crlf_action == CRLF_UNDEFINED)
@@ -1549,7 +1552,7 @@ struct stream_filter {
 	struct stream_filter_vtbl *vtbl;
 };
 
-static int null_filter_fn(struct stream_filter *filter,
+static int null_filter_fn(struct stream_filter *filter UNUSED,
 			  const char *input, size_t *isize_p,
 			  char *output, size_t *osize_p)
 {
@@ -1568,7 +1571,7 @@ static int null_filter_fn(struct stream_filter *filter,
 	return 0;
 }
 
-static void null_free_fn(struct stream_filter *filter)
+static void null_free_fn(struct stream_filter *filter UNUSED)
 {
 	; /* nothing -- null instances are shared */
 }

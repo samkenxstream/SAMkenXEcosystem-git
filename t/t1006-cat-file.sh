@@ -292,8 +292,8 @@ commit_message="Initial commit"
 commit_sha1=$(echo_without_newline "$commit_message" | git commit-tree $tree_sha1)
 commit_size=$(($(test_oid hexsz) + 137))
 commit_content="tree $tree_sha1
-author $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL> 0000000000 +0000
-committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 0000000000 +0000
+author $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL> 0 +0000
+committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 0 +0000
 
 $commit_message"
 
@@ -304,7 +304,7 @@ type blob
 tag hellotag
 tagger $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>"
 tag_description="This is a tag"
-tag_content="$tag_header_without_timestamp 0000000000 +0000
+tag_content="$tag_header_without_timestamp 0 +0000
 
 $tag_description"
 
@@ -603,7 +603,8 @@ do
 			fatal: Not a valid object name $(test_oid deadbeef_short)
 			EOF
 			test_must_fail git cat-file $arg1 $arg2 $(test_oid deadbeef_short) >out 2>err.actual &&
-			test_must_be_empty out
+			test_must_be_empty out &&
+			test_cmp expect.err err.actual
 		'
 
 		test_expect_success "cat-file $arg1 $arg2 error on missing full OID" '

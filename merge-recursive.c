@@ -10,7 +10,6 @@
 #include "alloc.h"
 #include "attr.h"
 #include "blob.h"
-#include "builtin.h"
 #include "cache-tree.h"
 #include "commit.h"
 #include "commit-reach.h"
@@ -18,6 +17,9 @@
 #include "diff.h"
 #include "diffcore.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "ll-merge.h"
 #include "lockfile.h"
 #include "object-store.h"
@@ -29,6 +31,7 @@
 #include "tag.h"
 #include "tree-walk.h"
 #include "unpack-trees.h"
+#include "wrapper.h"
 #include "xdiff-interface.h"
 
 struct merge_options_internal {
@@ -45,7 +48,7 @@ struct path_hashmap_entry {
 	char path[FLEX_ARRAY];
 };
 
-static int path_hashmap_cmp(const void *cmp_data,
+static int path_hashmap_cmp(const void *cmp_data UNUSED,
 			    const struct hashmap_entry *eptr,
 			    const struct hashmap_entry *entry_or_key,
 			    const void *keydata)
@@ -89,10 +92,10 @@ static struct dir_rename_entry *dir_rename_find_entry(struct hashmap *hashmap,
 	return hashmap_get_entry(hashmap, &key, ent, NULL);
 }
 
-static int dir_rename_cmp(const void *unused_cmp_data,
+static int dir_rename_cmp(const void *cmp_data UNUSED,
 			  const struct hashmap_entry *eptr,
 			  const struct hashmap_entry *entry_or_key,
-			  const void *unused_keydata)
+			  const void *keydata UNUSED)
 {
 	const struct dir_rename_entry *e1, *e2;
 
@@ -134,10 +137,10 @@ static struct collision_entry *collision_find_entry(struct hashmap *hashmap,
 	return hashmap_get_entry(hashmap, &key, ent, NULL);
 }
 
-static int collision_cmp(const void *unused_cmp_data,
+static int collision_cmp(const void *cmp_data UNUSED,
 			 const struct hashmap_entry *eptr,
 			 const struct hashmap_entry *entry_or_key,
-			 const void *unused_keydata)
+			 const void *keydata UNUSED)
 {
 	const struct collision_entry *e1, *e2;
 
@@ -412,7 +415,7 @@ static int unpack_trees_start(struct merge_options *opt,
 {
 	int rc;
 	struct tree_desc t[3];
-	struct index_state tmp_index = { NULL };
+	struct index_state tmp_index = INDEX_STATE_INIT(opt->repo);
 
 	memset(&opt->priv->unpack_opts, 0, sizeof(opt->priv->unpack_opts));
 	if (opt->priv->call_depth)
@@ -456,7 +459,7 @@ static void unpack_trees_finish(struct merge_options *opt)
 	clear_unpack_trees_porcelain(&opt->priv->unpack_opts);
 }
 
-static int save_files_dirs(const struct object_id *oid,
+static int save_files_dirs(const struct object_id *oid UNUSED,
 			   struct strbuf *base, const char *path,
 			   unsigned int mode, void *context)
 {
@@ -951,7 +954,8 @@ static int update_file_flags(struct merge_options *opt,
 			goto update_index;
 		}
 
-		buf = read_object_file(&contents->oid, &type, &size);
+		buf = repo_read_object_file(the_repository, &contents->oid,
+					    &type, &size);
 		if (!buf) {
 			ret = err(opt, _("cannot read object %s '%s'"),
 				  oid_to_hex(&contents->oid), path);
@@ -2100,7 +2104,7 @@ static char *handle_path_level_conflicts(struct merge_options *opt,
 	if (!new_path) {
 		/* This should only happen when entry->non_unique_new_dir set */
 		if (!entry->non_unique_new_dir)
-			BUG("entry->non_unqiue_dir not set and !new_path");
+			BUG("entry->non_unique_new_dir not set and !new_path");
 		output(opt, 1, _("CONFLICT (directory rename split): "
 			       "Unclear where to place %s because directory "
 			       "%s was renamed to multiple other directories, "
@@ -3021,7 +3025,7 @@ static int read_oid_strbuf(struct merge_options *opt,
 	void *buf;
 	enum object_type type;
 	unsigned long size;
-	buf = read_object_file(oid, &type, &size);
+	buf = repo_read_object_file(the_repository, oid, &type, &size);
 	if (!buf)
 		return err(opt, _("cannot read object %s"), oid_to_hex(oid));
 	if (type != OBJ_BLOB) {
@@ -3592,7 +3596,7 @@ static int merge_recursive_internal(struct merge_options *opt,
 	}
 
 	if (!merge_bases) {
-		merge_bases = get_merge_bases(h1, h2);
+		merge_bases = repo_get_merge_bases(the_repository, h1, h2);
 		merge_bases = reverse_commit_list(merge_bases);
 	}
 
@@ -3797,7 +3801,7 @@ static struct commit *get_ref(struct repository *repo,
 		return make_virtual_commit(repo, (struct tree*)object, name);
 	if (object->type != OBJ_COMMIT)
 		return NULL;
-	if (parse_commit((struct commit *)object))
+	if (repo_parse_commit(repo, (struct commit *)object))
 		return NULL;
 	return (struct commit *)object;
 }

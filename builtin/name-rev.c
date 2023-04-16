@@ -1,5 +1,8 @@
 #include "builtin.h"
-#include "cache.h"
+#include "alloc.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "repository.h"
 #include "config.h"
 #include "commit.h"
@@ -108,19 +111,11 @@ static int is_better_name(struct rev_name *name,
 	int name_distance = effective_distance(name->distance, name->generation);
 	int new_distance = effective_distance(distance, generation);
 
-	/*
-	 * When comparing names based on tags, prefer names
-	 * based on the older tag, even if it is farther away.
-	 */
+	/* If both are tags, we prefer the nearer one. */
 	if (from_tag && name->from_tag)
-		return (name->taggerdate > taggerdate ||
-			(name->taggerdate == taggerdate &&
-			 name_distance > new_distance));
+		return name_distance > new_distance;
 
-	/*
-	 * We know that at least one of them is a non-tag at this point.
-	 * favor a tag over a non-tag.
-	 */
+	/* Favor a tag over a non-tag. */
 	if (name->from_tag != from_tag)
 		return from_tag;
 
@@ -189,7 +184,7 @@ static void name_rev(struct commit *start_commit,
 	size_t parents_to_queue_nr, parents_to_queue_alloc = 0;
 	struct rev_name *start_name;
 
-	parse_commit(start_commit);
+	repo_parse_commit(the_repository, start_commit);
 	if (commit_is_before_cutoff(start_commit))
 		return;
 
@@ -219,7 +214,7 @@ static void name_rev(struct commit *start_commit,
 			struct rev_name *parent_name;
 			int generation, distance;
 
-			parse_commit(parent);
+			repo_parse_commit(the_repository, parent);
 			if (commit_is_before_cutoff(parent))
 				continue;
 
@@ -273,17 +268,6 @@ static int subpath_matches(const char *path, const char *filter)
 	return -1;
 }
 
-static const char *name_ref_abbrev(const char *refname, int shorten_unambiguous)
-{
-	if (shorten_unambiguous)
-		refname = shorten_unambiguous_ref(refname, 0);
-	else if (skip_prefix(refname, "refs/heads/", &refname))
-		; /* refname already advanced */
-	else
-		skip_prefix(refname, "refs/", &refname);
-	return refname;
-}
-
 struct name_ref_data {
 	int tags_only;
 	int name_only;
@@ -309,11 +293,19 @@ static void add_to_tip_table(const struct object_id *oid, const char *refname,
 			     int shorten_unambiguous, struct commit *commit,
 			     timestamp_t taggerdate, int from_tag, int deref)
 {
-	refname = name_ref_abbrev(refname, shorten_unambiguous);
+	char *short_refname = NULL;
+
+	if (shorten_unambiguous)
+		short_refname = shorten_unambiguous_ref(refname, 0);
+	else if (skip_prefix(refname, "refs/heads/", &refname))
+		; /* refname already advanced */
+	else
+		skip_prefix(refname, "refs/", &refname);
 
 	ALLOC_GROW(tip_table.table, tip_table.nr + 1, tip_table.alloc);
 	oidcpy(&tip_table.table[tip_table.nr].oid, oid);
-	tip_table.table[tip_table.nr].refname = xstrdup(refname);
+	tip_table.table[tip_table.nr].refname = short_refname ?
+		short_refname : xstrdup(refname);
 	tip_table.table[tip_table.nr].commit = commit;
 	tip_table.table[tip_table.nr].taggerdate = taggerdate;
 	tip_table.table[tip_table.nr].from_tag = from_tag;
@@ -344,7 +336,8 @@ static int cmp_by_tag_and_age(const void *a_, const void *b_)
 	return a->taggerdate != b->taggerdate;
 }
 
-static int name_ref(const char *path, const struct object_id *oid, int flags, void *cb_data)
+static int name_ref(const char *path, const struct object_id *oid,
+		    int flags UNUSED, void *cb_data)
 {
 	struct object *o = parse_object(the_repository, oid);
 	struct name_ref_data *data = cb_data;
@@ -503,7 +496,8 @@ static void show_name(const struct object *obj,
 	else if (allow_undefined)
 		printf("undefined\n");
 	else if (always)
-		printf("%s\n", find_unique_abbrev(oid, DEFAULT_ABBREV));
+		printf("%s\n",
+		       repo_find_unique_abbrev(the_repository, oid, DEFAULT_ABBREV));
 	else
 		die("cannot describe '%s'", oid_to_hex(oid));
 	strbuf_release(&buf);
@@ -537,7 +531,7 @@ static void name_rev_line(char *p, struct name_ref_data *data)
 			counter = 0;
 
 			*(p+1) = 0;
-			if (!get_oid(p - (hexsz - 1), &oid)) {
+			if (!repo_get_oid(the_repository, p - (hexsz - 1), &oid)) {
 				struct object *o =
 					lookup_object(the_repository, &oid);
 				if (o)
@@ -614,7 +608,7 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		struct object *object;
 		struct commit *commit;
 
-		if (get_oid(*argv, &oid)) {
+		if (repo_get_oid(the_repository, *argv, &oid)) {
 			fprintf(stderr, "Could not get sha1 for %s. Skipping.\n",
 					*argv);
 			continue;

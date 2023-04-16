@@ -1,5 +1,11 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "alloc.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "setup.h"
 #include "refs.h"
 #include "object-store.h"
 #include "commit.h"
@@ -59,7 +65,8 @@ static void format_subst(const struct commit *commit,
 		strbuf_add(&fmt, b + 8, c - b - 8);
 
 		strbuf_add(buf, src, b - src);
-		format_commit_message(commit, fmt.buf, buf, ctx);
+		repo_format_commit_message(the_repository, commit, fmt.buf,
+					   buf, ctx);
 		len -= c + 1 - src;
 		src  = c + 1;
 	}
@@ -84,7 +91,7 @@ static void *object_file_to_archive(const struct archiver_args *args,
 			       (args->tree ? &args->tree->object.oid : NULL), oid);
 
 	path += args->baselen;
-	buffer = read_object_file(oid, type, sizep);
+	buffer = repo_read_object_file(the_repository, oid, type, sizep);
 	if (buffer && S_ISREG(mode)) {
 		struct strbuf buf = STRBUF_INIT;
 		size_t size = 0;
@@ -120,7 +127,7 @@ static const struct attr_check *get_archive_attrs(struct index_state *istate,
 	static struct attr_check *check;
 	if (!check)
 		check = attr_check_initl("export-ignore", "export-subst", NULL);
-	git_check_attr(istate, path, check);
+	git_check_attr(istate, NULL, path, check);
 	return check;
 }
 
@@ -166,17 +173,15 @@ static int write_archive_entry(const struct object_id *oid, const char *base,
 		args->convert = check_attr_export_subst(check);
 	}
 
+	if (args->verbose)
+		fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
+
 	if (S_ISDIR(mode) || S_ISGITLINK(mode)) {
-		if (args->verbose)
-			fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
 		err = write_entry(args, oid, path.buf, path.len, mode, NULL, 0);
 		if (err)
 			return err;
 		return (S_ISDIR(mode) ? READ_TREE_RECURSIVE : 0);
 	}
-
-	if (args->verbose)
-		fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
 
 	/* Stream it? */
 	if (S_ISREG(mode) && !args->convert &&
@@ -382,7 +387,8 @@ struct path_exists_context {
 	struct archiver_args *args;
 };
 
-static int reject_entry(const struct object_id *oid, struct strbuf *base,
+static int reject_entry(const struct object_id *oid UNUSED,
+			struct strbuf *base,
 			const char *filename, unsigned mode,
 			void *context)
 {
@@ -456,13 +462,14 @@ static void parse_treeish_arg(const char **argv,
 		const char *colon = strchrnul(name, ':');
 		int refnamelen = colon - name;
 
-		if (!dwim_ref(name, refnamelen, &oid, &ref, 0))
+		if (!repo_dwim_ref(the_repository, name, refnamelen, &oid, &ref, 0))
 			die(_("no such ref: %.*s"), refnamelen, name);
 	} else {
-		dwim_ref(name, strlen(name), &oid, &ref, 0);
+		repo_dwim_ref(the_repository, name, strlen(name), &oid, &ref,
+			      0);
 	}
 
-	if (get_oid(name, &oid))
+	if (repo_get_oid(the_repository, name, &oid))
 		die(_("not a valid object name: %s"), name);
 
 	commit = lookup_commit_reference_gently(ar_args->repo, &oid, 1);
@@ -473,6 +480,8 @@ static void parse_treeish_arg(const char **argv,
 		commit_oid = NULL;
 		archive_time = time(NULL);
 	}
+	if (ar_args->mtime_option)
+		archive_time = approxidate(ar_args->mtime_option);
 
 	tree = parse_tree_indirect(&oid);
 	if (!tree)
@@ -499,7 +508,7 @@ static void parse_treeish_arg(const char **argv,
 	ar_args->time = archive_time;
 }
 
-static void extra_file_info_clear(void *util, const char *str)
+static void extra_file_info_clear(void *util, const char *str UNUSED)
 {
 	struct extra_file_info *info = util;
 	free(info->base);
@@ -587,6 +596,7 @@ static int parse_archive_args(int argc, const char **argv,
 	const char *remote = NULL;
 	const char *exec = NULL;
 	const char *output = NULL;
+	const char *mtime_option = NULL;
 	int compression_level = -1;
 	int verbose = 0;
 	int i;
@@ -608,6 +618,9 @@ static int parse_archive_args(int argc, const char **argv,
 		OPT_BOOL(0, "worktree-attributes", &worktree_attributes,
 			N_("read .gitattributes in working directory")),
 		OPT__VERBOSE(&verbose, N_("report archived files on stderr")),
+		{ OPTION_STRING, 0, "mtime", &mtime_option, N_("time"),
+		  N_("set modification time of archive entries"),
+		  PARSE_OPT_NONEG },
 		OPT_NUMBER_CALLBACK(&compression_level,
 			N_("set compression level"), number_callback),
 		OPT_GROUP(""),
@@ -669,6 +682,7 @@ static int parse_archive_args(int argc, const char **argv,
 	args->base = base;
 	args->baselen = strlen(base);
 	args->worktree_attributes = worktree_attributes;
+	args->mtime_option = mtime_option;
 
 	return argc;
 }
@@ -711,6 +725,7 @@ int write_archive(int argc, const char **argv, const char *prefix,
 
 	string_list_clear_func(&args.extra_files, extra_file_info_clear);
 	free(args.refname);
+	clear_pathspec(&args.pathspec);
 
 	return rc;
 }

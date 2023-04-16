@@ -1,6 +1,8 @@
-#include "builtin.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "commit.h"
+#include "gettext.h"
+#include "hex.h"
 #include "refs.h"
 #include "object-store.h"
 #include "pkt-line.h"
@@ -14,8 +16,10 @@
 #include "version.h"
 #include "oid-array.h"
 #include "gpg-interface.h"
-#include "cache.h"
 #include "shallow.h"
+#include "parse-options.h"
+#include "trace2.h"
+#include "write-or-die.h"
 
 int option_parse_push_signed(const struct option *opt,
 			     const char *arg, int unset)
@@ -42,9 +46,9 @@ int option_parse_push_signed(const struct option *opt,
 static void feed_object(const struct object_id *oid, FILE *fh, int negative)
 {
 	if (negative &&
-	    !has_object_file_with_flags(oid,
-					OBJECT_INFO_SKIP_FETCH_OBJECT |
-					OBJECT_INFO_QUICK))
+	    !repo_has_object_file_with_flags(the_repository, oid,
+					     OBJECT_INFO_SKIP_FETCH_OBJECT |
+					     OBJECT_INFO_QUICK))
 		return;
 
 	if (negative)
@@ -266,7 +270,7 @@ static int receive_status(struct packet_reader *reader, struct ref *refs)
 	return ret;
 }
 
-static int sideband_demux(int in, int out, void *data)
+static int sideband_demux(int in UNUSED, int out, void *data)
 {
 	int *fd = data, ret;
 	if (async_with_fork())

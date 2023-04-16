@@ -4,7 +4,9 @@
 #include "cache.h"
 #include "pathspec.h"
 #include "dir.h"
+#include "environment.h"
 #include "fsmonitor.h"
+#include "gettext.h"
 #include "config.h"
 #include "progress.h"
 #include "thread-utils.h"
@@ -150,6 +152,12 @@ void preload_index(struct index_state *index,
 		t2_sum_lstat += p->t2_nr_lstat;
 	}
 	stop_progress(&pd.progress);
+
+	if (pathspec) {
+		/* earlier we made deep copies for each thread to work with */
+		for (i = 0; i < threads; i++)
+			clear_pathspec(&data[i].pathspec);
+	}
 
 	trace_performance_leave("preload index");
 

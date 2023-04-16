@@ -4,10 +4,13 @@
 #include "cache.h"
 #include "config.h"
 #include "archive.h"
+#include "gettext.h"
+#include "hex.h"
 #include "streaming.h"
 #include "utf8.h"
 #include "object-store.h"
 #include "userdiff.h"
+#include "write-or-die.h"
 #include "xdiff-interface.h"
 #include "date.h"
 
@@ -612,12 +615,13 @@ static void dos_time(timestamp_t *timestamp, int *dos_date, int *dos_time)
 	*dos_time = tm.tm_sec / 2 + tm.tm_min * 32 + tm.tm_hour * 2048;
 }
 
-static int archive_zip_config(const char *var, const char *value, void *data)
+static int archive_zip_config(const char *var, const char *value,
+			      void *data UNUSED)
 {
 	return userdiff_config(var, value);
 }
 
-static int write_zip_archive(const struct archiver *ar,
+static int write_zip_archive(const struct archiver *ar UNUSED,
 			     struct archiver_args *args)
 {
 	int err;

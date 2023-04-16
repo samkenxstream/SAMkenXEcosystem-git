@@ -1,14 +1,17 @@
 #include "cache.h"
 #include "builtin.h"
 #include "exec-cmd.h"
+#include "gettext.h"
 #include "pkt-line.h"
 #include "parse-options.h"
 #include "protocol.h"
+#include "replace-object.h"
 #include "upload-pack.h"
 #include "serve.h"
 
 static const char * const upload_pack_usage[] = {
-	N_("git upload-pack [<options>] <dir>"),
+	N_("git-upload-pack [--[no-]strict] [--timeout=<n>] [--stateless-rpc]\n"
+	   "                [--advertise-refs] <directory>"),
 	NULL
 };
 

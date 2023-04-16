@@ -1,12 +1,16 @@
 #include "cache.h"
 #include "commit.h"
 #include "diff.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "revision.h"
 #include "builtin.h"
 #include "reachable.h"
 #include "parse-options.h"
 #include "progress.h"
 #include "prune-packed.h"
+#include "replace-object.h"
 #include "object-store.h"
 #include "shallow.h"
 
@@ -98,7 +102,8 @@ static int prune_object(const struct object_id *oid, const char *fullpath,
 	return 0;
 }
 
-static int prune_cruft(const char *basename, const char *path, void *data)
+static int prune_cruft(const char *basename, const char *path,
+		       void *data UNUSED)
 {
 	if (starts_with(basename, "tmp_obj_"))
 		prune_tmp_file(path);
@@ -107,7 +112,8 @@ static int prune_cruft(const char *basename, const char *path, void *data)
 	return 0;
 }
 
-static int prune_subdir(unsigned int nr, const char *path, void *data)
+static int prune_subdir(unsigned int nr UNUSED, const char *path,
+			void *data UNUSED)
 {
 	if (!show_only)
 		rmdir(path);
@@ -127,7 +133,9 @@ static void remove_temporary_files(const char *path)
 
 	dir = opendir(path);
 	if (!dir) {
-		fprintf(stderr, "Unable to open directory %s\n", path);
+		if (errno != ENOENT)
+			fprintf(stderr, "Unable to open directory %s: %s\n",
+				path, strerror(errno));
 		return;
 	}
 	while ((de = readdir(dir)) != NULL)
@@ -166,7 +174,7 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 		struct object_id oid;
 		const char *name = *argv++;
 
-		if (!get_oid(name, &oid)) {
+		if (!repo_get_oid(the_repository, name, &oid)) {
 			struct object *object = parse_object_or_die(&oid,
 								    name);
 			add_pending_object(&revs, object, "");

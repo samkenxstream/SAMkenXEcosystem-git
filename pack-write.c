@@ -1,11 +1,13 @@
 #include "cache.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "pack.h"
 #include "csum-file.h"
 #include "remote.h"
 #include "chunk-format.h"
 #include "pack-mtimes.h"
 #include "oidmap.h"
-#include "chunk-format.h"
 #include "pack-objects.h"
 
 void reset_pack_idx_option(struct pack_idx_option *opts)

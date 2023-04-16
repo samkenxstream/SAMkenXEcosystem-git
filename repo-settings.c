@@ -1,4 +1,4 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
 #include "repository.h"
 #include "midx.h"
@@ -22,7 +22,7 @@ void prepare_repo_settings(struct repository *r)
 {
 	int experimental;
 	int value;
-	char *strval;
+	const char *strval;
 	int manyfiles;
 
 	if (!r->gitdir)
@@ -43,9 +43,11 @@ void prepare_repo_settings(struct repository *r)
 	/* Defaults modified by feature.* */
 	if (experimental) {
 		r->settings.fetch_negotiation_algorithm = FETCH_NEGOTIATION_SKIPPING;
+		r->settings.gc_cruft_packs = 1;
 	}
 	if (manyfiles) {
 		r->settings.index_version = 4;
+		r->settings.index_skip_hash = 1;
 		r->settings.core_untracked_cache = UNTRACKED_CACHE_WRITE;
 	}
 
@@ -60,6 +62,7 @@ void prepare_repo_settings(struct repository *r)
 	repo_cfg_bool(r, "pack.usesparse", &r->settings.pack_use_sparse, 1);
 	repo_cfg_bool(r, "core.multipackindex", &r->settings.core_multi_pack_index, 1);
 	repo_cfg_bool(r, "index.sparse", &r->settings.sparse_index, 0);
+	repo_cfg_bool(r, "index.skiphash", &r->settings.index_skip_hash, r->settings.index_skip_hash);
 
 	/*
 	 * The GIT_TEST_MULTI_PACK_INDEX variable is special in that
@@ -77,7 +80,7 @@ void prepare_repo_settings(struct repository *r)
 	if (!repo_config_get_int(r, "index.version", &value))
 		r->settings.index_version = value;
 
-	if (!repo_config_get_string(r, "core.untrackedcache", &strval)) {
+	if (!repo_config_get_string_tmp(r, "core.untrackedcache", &strval)) {
 		int v = git_parse_maybe_bool(strval);
 
 		/*
@@ -88,10 +91,9 @@ void prepare_repo_settings(struct repository *r)
 		if (v >= 0)
 			r->settings.core_untracked_cache = v ?
 				UNTRACKED_CACHE_WRITE : UNTRACKED_CACHE_REMOVE;
-		free(strval);
 	}
 
-	if (!repo_config_get_string(r, "fetch.negotiationalgorithm", &strval)) {
+	if (!repo_config_get_string_tmp(r, "fetch.negotiationalgorithm", &strval)) {
 		int fetch_default = r->settings.fetch_negotiation_algorithm;
 		if (!strcasecmp(strval, "skipping"))
 			r->settings.fetch_negotiation_algorithm = FETCH_NEGOTIATION_SKIPPING;

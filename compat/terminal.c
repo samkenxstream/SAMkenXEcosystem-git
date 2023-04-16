@@ -1,10 +1,12 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "compat/terminal.h"
+#include "gettext.h"
 #include "sigchain.h"
 #include "strbuf.h"
 #include "run-command.h"
 #include "string-list.h"
 #include "hashmap.h"
+#include "wrapper.h"
 
 #if defined(HAVE_DEV_TTY) || defined(GIT_WINDOWS_NATIVE)
 
@@ -477,7 +479,7 @@ struct escape_sequence_entry {
 	char sequence[FLEX_ARRAY];
 };
 
-static int sequence_entry_cmp(const void *hashmap_cmp_fn_data,
+static int sequence_entry_cmp(const void *hashmap_cmp_fn_data UNUSED,
 			      const struct escape_sequence_entry *e1,
 			      const struct escape_sequence_entry *e2,
 			      const void *keydata)

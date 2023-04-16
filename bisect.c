@@ -2,6 +2,9 @@
 #include "config.h"
 #include "commit.h"
 #include "diff.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "revision.h"
 #include "refs.h"
 #include "list-objects.h"
@@ -21,8 +24,6 @@ static struct oid_array good_revs;
 static struct oid_array skipped_revs;
 
 static struct object_id *current_bad_oid;
-
-static const char *argv_checkout[] = {"checkout", "-q", NULL, "--", NULL};
 
 static const char *term_bad;
 static const char *term_good;
@@ -150,8 +151,9 @@ static void show_list(const char *debug, int counted, int nr,
 		unsigned commit_flags = commit->object.flags;
 		enum object_type type;
 		unsigned long size;
-		char *buf = read_object_file(&commit->object.oid, &type,
-					     &size);
+		char *buf = repo_read_object_file(the_repository,
+						  &commit->object.oid, &type,
+						  &size);
 		const char *subject_start;
 		int subject_len;
 
@@ -441,7 +443,7 @@ void find_bisection(struct commit_list **commit_list, int *reaches,
 }
 
 static int register_ref(const char *refname, const struct object_id *oid,
-			int flags, void *cb_data)
+			int flags UNUSED, void *cb_data UNUSED)
 {
 	struct strbuf good_prefix = STRBUF_INIT;
 	strbuf_addstr(&good_prefix, term_good);
@@ -474,7 +476,6 @@ static GIT_PATH_FUNC(git_path_bisect_start, "BISECT_START")
 static GIT_PATH_FUNC(git_path_bisect_log, "BISECT_LOG")
 static GIT_PATH_FUNC(git_path_bisect_terms, "BISECT_TERMS")
 static GIT_PATH_FUNC(git_path_bisect_first_parent, "BISECT_FIRST_PARENT")
-static GIT_PATH_FUNC(git_path_head_name, "head-name")
 
 static void read_bisect_paths(struct strvec *array)
 {
@@ -729,20 +730,22 @@ static int is_expected_rev(const struct object_id *oid)
 enum bisect_error bisect_checkout(const struct object_id *bisect_rev,
 				  int no_checkout)
 {
-	char bisect_rev_hex[GIT_MAX_HEXSZ + 1];
 	struct commit *commit;
 	struct pretty_print_context pp = {0};
 	struct strbuf commit_msg = STRBUF_INIT;
 
-	oid_to_hex_r(bisect_rev_hex, bisect_rev);
 	update_ref(NULL, "BISECT_EXPECTED_REV", bisect_rev, NULL, 0, UPDATE_REFS_DIE_ON_ERR);
 
-	argv_checkout[2] = bisect_rev_hex;
 	if (no_checkout) {
 		update_ref(NULL, "BISECT_HEAD", bisect_rev, NULL, 0,
 			   UPDATE_REFS_DIE_ON_ERR);
 	} else {
-		if (run_command_v_opt(argv_checkout, RUN_GIT_CMD))
+		struct child_process cmd = CHILD_PROCESS_INIT;
+
+		cmd.git_cmd = 1;
+		strvec_pushl(&cmd.args, "checkout", "-q",
+			     oid_to_hex(bisect_rev), "--", NULL);
+		if (run_command(&cmd))
 			/*
 			 * Errors in `run_command()` itself, signaled by res < 0,
 			 * and errors in the child process, signaled by res > 0
@@ -752,7 +755,8 @@ enum bisect_error bisect_checkout(const struct object_id *bisect_rev,
 	}
 
 	commit = lookup_commit_reference(the_repository, bisect_rev);
-	format_commit_message(commit, "[%H] %s%n", &commit_msg, &pp);
+	repo_format_commit_message(the_repository, commit, "[%H] %s%n",
+				   &commit_msg, &pp);
 	fputs(commit_msg.buf, stdout);
 	strbuf_release(&commit_msg);
 
@@ -847,7 +851,8 @@ static enum bisect_error check_merge_bases(int rev_nr, struct commit **rev, int 
 	enum bisect_error res = BISECT_OK;
 	struct commit_list *result;
 
-	result = get_merge_bases_many(rev[0], rev_nr - 1, rev + 1);
+	result = repo_get_merge_bases_many(the_repository, rev[0], rev_nr - 1,
+					   rev + 1);
 
 	for (; result; result = result->next) {
 		const struct object_id *mb = &result->item->object.oid;
@@ -1160,8 +1165,9 @@ int estimate_bisect_steps(int all)
 	return (e < 3 * x) ? n : n - 1;
 }
 
-static int mark_for_removal(const char *refname, const struct object_id *oid,
-			    int flag, void *cb_data)
+static int mark_for_removal(const char *refname,
+			    const struct object_id *oid UNUSED,
+			    int flag UNUSED, void *cb_data)
 {
 	struct string_list *refs = cb_data;
 	char *ref = xstrfmt("refs/bisect%s", refname);
@@ -1187,8 +1193,6 @@ int bisect_clean_state(void)
 	unlink_or_warn(git_path_bisect_run());
 	unlink_or_warn(git_path_bisect_terms());
 	unlink_or_warn(git_path_bisect_first_parent());
-	/* Cleanup head-name if it got left by an old version of git-bisect */
-	unlink_or_warn(git_path_head_name());
 	/*
 	 * Cleanup BISECT_START last to support the --no-checkout option
 	 * introduced in the commit 4796e823a.

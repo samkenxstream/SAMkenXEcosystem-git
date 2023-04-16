@@ -2,6 +2,9 @@
 #include "tag.h"
 #include "commit.h"
 #include "commit-graph.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "repository.h"
 #include "object-store.h"
 #include "pkt-line.h"
@@ -20,6 +23,7 @@
 #include "refs.h"
 #include "commit-reach.h"
 #include "run-command.h"
+#include "setup.h"
 #include "shallow.h"
 #include "hook.h"
 
@@ -59,6 +63,14 @@ struct commit *lookup_commit_or_die(const struct object_id *oid, const char *ref
 	return c;
 }
 
+struct commit *lookup_commit_object(struct repository *r,
+				    const struct object_id *oid)
+{
+	struct object *obj = parse_object(r, oid);
+	return obj ? object_as_type(obj, OBJ_COMMIT, 0) : NULL;
+
+}
+
 struct commit *lookup_commit(struct repository *r, const struct object_id *oid)
 {
 	struct object *obj = lookup_object(r, oid);
@@ -72,10 +84,10 @@ struct commit *lookup_commit_reference_by_name(const char *name)
 	struct object_id oid;
 	struct commit *commit;
 
-	if (get_oid_committish(name, &oid))
+	if (repo_get_oid_committish(the_repository, name, &oid))
 		return NULL;
 	commit = lookup_commit_reference(the_repository, &oid);
-	if (parse_commit(commit))
+	if (repo_parse_commit(the_repository, commit))
 		return NULL;
 	return commit;
 }
@@ -374,7 +386,7 @@ struct tree *repo_get_commit_tree(struct repository *r,
 
 struct object_id *get_commit_tree_oid(const struct commit *commit)
 {
-	struct tree *tree = get_commit_tree(commit);
+	struct tree *tree = repo_get_commit_tree(the_repository, commit);
 	return tree ? &tree->object.oid : NULL;
 }
 
@@ -500,6 +512,17 @@ int repo_parse_commit_internal(struct repository *r,
 	enum object_type type;
 	void *buffer;
 	unsigned long size;
+	struct object_info oi = {
+		.typep = &type,
+		.sizep = &size,
+		.contentp = &buffer,
+	};
+	/*
+	 * Git does not support partial clones that exclude commits, so set
+	 * OBJECT_INFO_SKIP_FETCH_OBJECT to fail fast when an object is missing.
+	 */
+	int flags = OBJECT_INFO_LOOKUP_REPLACE | OBJECT_INFO_SKIP_FETCH_OBJECT |
+		OBJECT_INFO_DIE_IF_CORRUPT;
 	int ret;
 
 	if (!item)
@@ -508,8 +531,8 @@ int repo_parse_commit_internal(struct repository *r,
 		return 0;
 	if (use_commit_graph && parse_commit_in_graph(r, item))
 		return 0;
-	buffer = repo_read_object_file(r, &item->object.oid, &type, &size);
-	if (!buffer)
+
+	if (oid_object_info_extended(r, &item->object.oid, &oi, flags) < 0)
 		return quiet_on_missing ? -1 :
 			error("Could not read %s",
 			     oid_to_hex(&item->object.oid));
@@ -536,7 +559,7 @@ int repo_parse_commit_gently(struct repository *r,
 
 void parse_commit_or_die(struct commit *item)
 {
-	if (parse_commit(item))
+	if (repo_parse_commit(the_repository, item))
 		die("unable to parse commit %s",
 		    item ? oid_to_hex(&item->object.oid) : "(null)");
 }
@@ -669,7 +692,7 @@ struct commit *pop_most_recent_commit(struct commit_list **list,
 
 	while (parents) {
 		struct commit *commit = parents->item;
-		if (!parse_commit(commit) && !(commit->object.flags & mark)) {
+		if (!repo_parse_commit(the_repository, commit) && !(commit->object.flags & mark)) {
 			commit->object.flags |= mark;
 			commit_list_insert_by_date(commit, list);
 		}
@@ -693,8 +716,10 @@ static void clear_commit_marks_1(struct commit_list **plist,
 		if (!parents)
 			return;
 
-		while ((parents = parents->next))
-			commit_list_insert(parents->item, plist);
+		while ((parents = parents->next)) {
+			if (parents->item->object.flags & mark)
+				commit_list_insert(parents->item, plist);
+		}
 
 		commit = commit->parents->item;
 	}
@@ -741,7 +766,8 @@ define_commit_slab(author_date_slab, timestamp_t);
 void record_author_date(struct author_date_slab *author_date,
 			struct commit *commit)
 {
-	const char *buffer = get_commit_buffer(commit, NULL);
+	const char *buffer = repo_get_commit_buffer(the_repository, commit,
+						    NULL);
 	struct ident_split ident;
 	const char *ident_line;
 	size_t ident_len;
@@ -761,7 +787,7 @@ void record_author_date(struct author_date_slab *author_date,
 	*(author_date_slab_at(author_date, commit)) = date;
 
 fail_exit:
-	unuse_commit_buffer(commit, buffer);
+	repo_unuse_commit_buffer(the_repository, commit, buffer);
 }
 
 int compare_commits_by_author_date(const void *a_, const void *b_,
@@ -780,7 +806,8 @@ int compare_commits_by_author_date(const void *a_, const void *b_,
 	return 0;
 }
 
-int compare_commits_by_gen_then_commit_date(const void *a_, const void *b_, void *unused)
+int compare_commits_by_gen_then_commit_date(const void *a_, const void *b_,
+					    void *unused UNUSED)
 {
 	const struct commit *a = a_, *b = b_;
 	const timestamp_t generation_a = commit_graph_generation(a),
@@ -800,7 +827,8 @@ int compare_commits_by_gen_then_commit_date(const void *a_, const void *b_, void
 	return 0;
 }
 
-int compare_commits_by_commit_date(const void *a_, const void *b_, void *unused)
+int compare_commits_by_commit_date(const void *a_, const void *b_,
+				   void *unused UNUSED)
 {
 	const struct commit *a = a_, *b = b_;
 	/* newer commits with larger date first */
@@ -942,7 +970,7 @@ static void add_one_commit(struct object_id *oid, struct rev_collect *revs)
 	commit = lookup_commit(the_repository, oid);
 	if (!commit ||
 	    (commit->object.flags & TMP_MARK) ||
-	    parse_commit(commit))
+	    repo_parse_commit(the_repository, commit))
 		return;
 
 	ALLOC_GROW(revs->commit, revs->nr + 1, revs->alloc);
@@ -951,8 +979,9 @@ static void add_one_commit(struct object_id *oid, struct rev_collect *revs)
 }
 
 static int collect_one_reflog_ent(struct object_id *ooid, struct object_id *noid,
-				  const char *ident, timestamp_t timestamp,
-				  int tz, const char *message, void *cbdata)
+				  const char *ident UNUSED,
+				  timestamp_t timestamp UNUSED, int tz UNUSED,
+				  const char *message UNUSED, void *cbdata)
 {
 	struct rev_collect *revs = cbdata;
 
@@ -973,7 +1002,8 @@ struct commit *get_fork_point(const char *refname, struct commit *commit)
 	struct commit *ret = NULL;
 	char *full_refname;
 
-	switch (dwim_ref(refname, strlen(refname), &oid, &full_refname, 0)) {
+	switch (repo_dwim_ref(the_repository, refname, strlen(refname), &oid,
+			      &full_refname, 0)) {
 	case 0:
 		die("No such ref: '%s'", refname);
 	case 1:
@@ -992,7 +1022,8 @@ struct commit *get_fork_point(const char *refname, struct commit *commit)
 	for (i = 0; i < revs.nr; i++)
 		revs.commit[i]->object.flags &= ~TMP_MARK;
 
-	bases = get_merge_bases_many(commit, revs.nr, revs.commit);
+	bases = repo_get_merge_bases_many(the_repository, commit, revs.nr,
+					  revs.commit);
 
 	/*
 	 * There should be one and only one merge base, when we found
@@ -1011,6 +1042,7 @@ struct commit *get_fork_point(const char *refname, struct commit *commit)
 	ret = bases->item;
 
 cleanup_return:
+	free(revs.commit);
 	free_commit_list(bases);
 	free(full_refname);
 	return ret;
@@ -1072,10 +1104,11 @@ int parse_signed_commit(const struct commit *commit,
 			const struct git_hash_algo *algop)
 {
 	unsigned long size;
-	const char *buffer = get_commit_buffer(commit, &size);
+	const char *buffer = repo_get_commit_buffer(the_repository, commit,
+						    &size);
 	int ret = parse_buffer_signed_by_header(buffer, size, payload, signature, algop);
 
-	unuse_commit_buffer(commit, buffer);
+	repo_unuse_commit_buffer(the_repository, commit, buffer);
 	return ret;
 }
 
@@ -1186,7 +1219,8 @@ static void handle_signed_tag(struct commit *parent, struct commit_extra_header 
 	desc = merge_remote_util(parent);
 	if (!desc || !desc->obj)
 		return;
-	buf = read_object_file(&desc->obj->oid, &type, &size);
+	buf = repo_read_object_file(the_repository, &desc->obj->oid, &type,
+				    &size);
 	if (!buf || type != OBJ_TAG)
 		goto free_return;
 	if (!parse_signature(buf, size, &payload, &signature))
@@ -1248,7 +1282,8 @@ void verify_merge_signature(struct commit *commit, int verbosity,
 
 	ret = check_commit_signature(commit, &signature_check);
 
-	find_unique_abbrev_r(hex, &commit->object.oid, DEFAULT_ABBREV);
+	repo_find_unique_abbrev_r(the_repository, hex, &commit->object.oid,
+				  DEFAULT_ABBREV);
 	switch (signature_check.result) {
 	case 'G':
 		if (ret || (check_trust && signature_check.trust_level < TRUST_MARGINAL))
@@ -1293,9 +1328,10 @@ struct commit_extra_header *read_commit_extra_headers(struct commit *commit,
 {
 	struct commit_extra_header *extra = NULL;
 	unsigned long size;
-	const char *buffer = get_commit_buffer(commit, &size);
+	const char *buffer = repo_get_commit_buffer(the_repository, commit,
+						    &size);
 	extra = read_commit_extra_header_lines(buffer, size, exclude);
-	unuse_commit_buffer(commit, buffer);
+	repo_unuse_commit_buffer(the_repository, commit, buffer);
 	return extra;
 }
 
@@ -1609,10 +1645,11 @@ struct commit *get_merge_parent(const char *name)
 	struct object *obj;
 	struct commit *commit;
 	struct object_id oid;
-	if (get_oid(name, &oid))
+	if (repo_get_oid(the_repository, name, &oid))
 		return NULL;
 	obj = parse_object(the_repository, &oid);
-	commit = (struct commit *)peel_to_type(name, 0, obj, OBJ_COMMIT);
+	commit = (struct commit *)repo_peel_to_type(the_repository, name, 0,
+						    obj, OBJ_COMMIT);
 	if (commit && !merge_remote_util(commit))
 		set_merge_remote_desc(commit, name, obj);
 	return commit;

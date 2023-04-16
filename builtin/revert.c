@@ -1,8 +1,10 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "alloc.h"
 #include "config.h"
 #include "builtin.h"
 #include "parse-options.h"
 #include "diff.h"
+#include "gettext.h"
 #include "revision.h"
 #include "rerere.h"
 #include "dir.h"
@@ -21,14 +23,15 @@
  */
 
 static const char * const revert_usage[] = {
-	N_("git revert [<options>] <commit-ish>..."),
-	N_("git revert <subcommand>"),
+	N_("git revert [--[no-]edit] [-n] [-m <parent-number>] [-s] [-S[<keyid>]] <commit>..."),
+	N_("git revert (--continue | --skip | --abort | --quit)"),
 	NULL
 };
 
 static const char * const cherry_pick_usage[] = {
-	N_("git cherry-pick [<options>] <commit-ish>..."),
-	N_("git cherry-pick <subcommand>"),
+	N_("git cherry-pick [--edit] [-n] [-m <parent-number>] [-s] [-x] [--ff]\n"
+	   "                [-S[<keyid>]] <commit>..."),
+	N_("git cherry-pick (--continue | --skip | --abort | --quit)"),
 	NULL
 };
 
@@ -92,7 +95,8 @@ static void verify_opt_compatible(const char *me, const char *base_opt, ...)
 		die(_("%s: %s cannot be used with %s"), me, this_opt, base_opt);
 }
 
-static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
+static int run_sequencer(int argc, const char **argv, const char *prefix,
+			 struct replay_opts *opts)
 {
 	const char * const * usage_str = revert_or_cherry_pick_usage(opts);
 	const char *me = action_name(opts);
@@ -139,9 +143,9 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 		options = parse_options_concat(options, cp_extra);
 	}
 
-	argc = parse_options(argc, argv, NULL, options, usage_str,
+	argc = parse_options(argc, argv, prefix, options, usage_str,
 			PARSE_OPT_KEEP_ARGV0 |
-			PARSE_OPT_KEEP_UNKNOWN);
+			PARSE_OPT_KEEP_UNKNOWN_OPT);
 
 	prepare_repo_settings(the_repository);
 	the_repository->settings.command_requires_full_index = 0;
@@ -220,6 +224,7 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 	opts->strategy = xstrdup_or_null(opts->strategy);
 	if (!opts->strategy && getenv("GIT_TEST_MERGE_ALGORITHM"))
 		opts->strategy = xstrdup(getenv("GIT_TEST_MERGE_ALGORITHM"));
+	free(options);
 
 	if (cmd == 'q') {
 		int ret = sequencer_remove_state(opts);
@@ -243,12 +248,10 @@ int cmd_revert(int argc, const char **argv, const char *prefix)
 
 	opts.action = REPLAY_REVERT;
 	sequencer_init_config(&opts);
-	res = run_sequencer(argc, argv, &opts);
+	res = run_sequencer(argc, argv, prefix, &opts);
 	if (res < 0)
 		die(_("revert failed"));
-	if (opts.revs)
-		release_revisions(opts.revs);
-	free(opts.revs);
+	replay_opts_release(&opts);
 	return res;
 }
 
@@ -259,8 +262,9 @@ int cmd_cherry_pick(int argc, const char **argv, const char *prefix)
 
 	opts.action = REPLAY_PICK;
 	sequencer_init_config(&opts);
-	res = run_sequencer(argc, argv, &opts);
+	res = run_sequencer(argc, argv, prefix, &opts);
 	if (res < 0)
 		die(_("cherry-pick failed"));
+	replay_opts_release(&opts);
 	return res;
 }

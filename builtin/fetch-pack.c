@@ -1,4 +1,7 @@
 #include "builtin.h"
+#include "alloc.h"
+#include "gettext.h"
+#include "hex.h"
 #include "pkt-line.h"
 #include "fetch-pack.h"
 #include "remote.h"
@@ -40,7 +43,7 @@ static void add_sought_entry(struct ref ***sought, int *nr, int *alloc,
 	(*sought)[*nr - 1] = ref;
 }
 
-int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
+int cmd_fetch_pack(int argc, const char **argv, const char *prefix UNUSED)
 {
 	int i, ret;
 	struct ref *ref = NULL;
@@ -62,6 +65,7 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	packet_trace_identity("fetch-pack");
 
 	memset(&args, 0, sizeof(args));
+	list_objects_filter_init(&args.filter_options);
 	args.uploadpack = "git-upload-pack";
 
 	for (i = 1; i < argc && *argv[i] == '-'; i++) {
@@ -210,8 +214,8 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 		int flags = args.verbose ? CONNECT_VERBOSE : 0;
 		if (args.diag_url)
 			flags |= CONNECT_DIAG_URL;
-		conn = git_connect(fd, dest, args.uploadpack,
-				   flags);
+		conn = git_connect(fd, dest, "git-upload-pack",
+				   args.uploadpack, flags);
 		if (!conn)
 			return args.diag_url ? 0 : 1;
 	}
