@@ -8,6 +8,8 @@
 #include "commit.h"
 #include "tag.h"
 #include "refs.h"
+#include "object-name.h"
+#include "pager.h"
 #include "parse-options.h"
 #include "prio-queue.h"
 #include "hash-lookup.h"
@@ -571,7 +573,11 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 				   N_("ignore refs matching <pattern>")),
 		OPT_GROUP(""),
 		OPT_BOOL(0, "all", &all, N_("list all commits reachable from all refs")),
-		OPT_BOOL(0, "stdin", &transform_stdin, N_("deprecated: use --annotate-stdin instead")),
+		OPT_BOOL_F(0,
+			   "stdin",
+			   &transform_stdin,
+			   N_("deprecated: use --annotate-stdin instead"),
+			   PARSE_OPT_HIDDEN),
 		OPT_BOOL(0, "annotate-stdin", &annotate_stdin, N_("annotate text from stdin")),
 		OPT_BOOL(0, "undefined", &allow_undefined, N_("allow to print `undefined` names (default)")),
 		OPT_BOOL(0, "always",     &always,

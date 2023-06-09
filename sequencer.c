@@ -1,14 +1,19 @@
 #include "cache.h"
 #include "abspath.h"
+#include "advice.h"
 #include "alloc.h"
 #include "config.h"
+#include "copy.h"
 #include "environment.h"
 #include "gettext.h"
 #include "hex.h"
 #include "lockfile.h"
 #include "dir.h"
+#include "object-file.h"
+#include "object-name.h"
 #include "object-store.h"
 #include "object.h"
+#include "pager.h"
 #include "commit.h"
 #include "sequencer.h"
 #include "tag.h"
@@ -359,9 +364,7 @@ void replay_opts_release(struct replay_opts *opts)
 	free(opts->reflog_action);
 	free(opts->default_strategy);
 	free(opts->strategy);
-	for (size_t i = 0; i < opts->xopts_nr; i++)
-		free(opts->xopts[i]);
-	free(opts->xopts);
+	strvec_clear (&opts->xopts);
 	strbuf_release(&opts->current_fixups);
 	if (opts->revs)
 		release_revisions(opts->revs);
@@ -699,8 +702,8 @@ static int do_recursive_merge(struct repository *r,
 	next_tree = next ? repo_get_commit_tree(r, next) : empty_tree(r);
 	base_tree = base ? repo_get_commit_tree(r, base) : empty_tree(r);
 
-	for (i = 0; i < opts->xopts_nr; i++)
-		parse_merge_opt(&o, opts->xopts[i]);
+	for (i = 0; i < opts->xopts.nr; i++)
+		parse_merge_opt(&o, opts->xopts.v[i]);
 
 	if (!opts->strategy || !strcmp(opts->strategy, "ort")) {
 		memset(&result, 0, sizeof(result));
@@ -2336,7 +2339,7 @@ static int do_pick_commit(struct repository *r,
 		commit_list_insert(base, &common);
 		commit_list_insert(next, &remotes);
 		res |= try_merge_command(r, opts->strategy,
-					 opts->xopts_nr, (const char **)opts->xopts,
+					 opts->xopts.nr, opts->xopts.v,
 					common, oid_to_hex(&head), remotes);
 		free_commit_list(common);
 		free_commit_list(remotes);
@@ -2474,7 +2477,6 @@ void todo_list_release(struct todo_list *todo_list)
 static struct todo_item *append_new_todo(struct todo_list *todo_list)
 {
 	ALLOC_GROW(todo_list->items, todo_list->nr + 1, todo_list->alloc);
-	todo_list->total_nr++;
 	return todo_list->items + todo_list->nr++;
 }
 
@@ -2665,7 +2667,7 @@ int todo_list_parse_insn_buffer(struct repository *r, char *buf,
 	char *p = buf, *next_p;
 	int i, res = 0, fixup_okay = file_exists(rebase_path_done());
 
-	todo_list->current = todo_list->nr = 0;
+	todo_list->current = todo_list->nr = todo_list->total_nr = 0;
 
 	for (i = 1; *p; i++, p = next_p) {
 		char *eol = strchrnul(p, '\n');
@@ -2685,6 +2687,9 @@ int todo_list_parse_insn_buffer(struct repository *r, char *buf,
 			item->arg_len = (int)(eol - p);
 			item->commit = NULL;
 		}
+
+		if (item->command != TODO_COMMENT)
+			todo_list->total_nr++;
 
 		if (fixup_okay)
 			; /* do nothing */
@@ -2909,8 +2914,7 @@ static int populate_opts_cb(const char *key, const char *value, void *data)
 	else if (!strcmp(key, "options.gpg-sign"))
 		git_config_string_dup(&opts->gpg_sign, key, value);
 	else if (!strcmp(key, "options.strategy-option")) {
-		ALLOC_GROW(opts->xopts, opts->xopts_nr + 1, opts->xopts_alloc);
-		opts->xopts[opts->xopts_nr++] = xstrdup(value);
+		strvec_push(&opts->xopts, value);
 	} else if (!strcmp(key, "options.allow-rerere-auto"))
 		opts->allow_rerere_auto =
 			git_config_bool_or_int(key, value, &error_flag) ?
@@ -2927,27 +2931,27 @@ static int populate_opts_cb(const char *key, const char *value, void *data)
 	return 0;
 }
 
-void parse_strategy_opts(struct replay_opts *opts, char *raw_opts)
+static void parse_strategy_opts(struct replay_opts *opts, char *raw_opts)
 {
 	int i;
 	int count;
+	const char **argv;
 	char *strategy_opts_string = raw_opts;
 
 	if (*strategy_opts_string == ' ')
 		strategy_opts_string++;
 
-	count = split_cmdline(strategy_opts_string,
-			      (const char ***)&opts->xopts);
+	count = split_cmdline(strategy_opts_string, &argv);
 	if (count < 0)
-		die(_("could not split '%s': %s"), strategy_opts_string,
+		BUG("could not split '%s': %s", strategy_opts_string,
 			    split_cmdline_strerror(count));
-	opts->xopts_nr = count;
-	for (i = 0; i < opts->xopts_nr; i++) {
-		const char *arg = opts->xopts[i];
+	for (i = 0; i < count; i++) {
+		const char *arg = argv[i];
 
 		skip_prefix(arg, "--", &arg);
-		opts->xopts[i] = xstrdup(arg);
+		strvec_push(&opts->xopts, arg);
 	}
+	free(argv);
 }
 
 static void read_strategy_opts(struct replay_opts *opts, struct strbuf *buf)
@@ -2955,7 +2959,6 @@ static void read_strategy_opts(struct replay_opts *opts, struct strbuf *buf)
 	strbuf_reset(buf);
 	if (!read_oneliner(buf, rebase_path_strategy(), 0))
 		return;
-	free(opts->strategy);
 	opts->strategy = strbuf_detach(buf, NULL);
 	if (!read_oneliner(buf, rebase_path_strategy_opts(), 0))
 		return;
@@ -3064,12 +3067,13 @@ done_rebase_i:
 
 static void write_strategy_opts(struct replay_opts *opts)
 {
-	int i;
 	struct strbuf buf = STRBUF_INIT;
 
-	for (i = 0; i < opts->xopts_nr; ++i)
-		strbuf_addf(&buf, " --%s", opts->xopts[i]);
-
+	/*
+	 * Quote strategy options so that they can be read correctly
+	 * by split_cmdline().
+	 */
+	quote_cmdline(&buf, opts->xopts.v);
 	write_file(rebase_path_strategy_opts(), "%s\n", buf.buf);
 	strbuf_release(&buf);
 }
@@ -3092,7 +3096,7 @@ int write_basic_state(struct replay_opts *opts, const char *head_name,
 		write_file(rebase_path_verbose(), "%s", "");
 	if (opts->strategy)
 		write_file(rebase_path_strategy(), "%s\n", opts->strategy);
-	if (opts->xopts_nr > 0)
+	if (opts->xopts.nr > 0)
 		write_strategy_opts(opts);
 
 	if (opts->allow_rerere_auto == RERERE_AUTOUPDATE)
@@ -3461,13 +3465,10 @@ static int save_opts(struct replay_opts *opts)
 	if (opts->gpg_sign)
 		res |= git_config_set_in_file_gently(opts_file,
 					"options.gpg-sign", opts->gpg_sign);
-	if (opts->xopts) {
-		int i;
-		for (i = 0; i < opts->xopts_nr; i++)
-			res |= git_config_set_multivar_in_file_gently(opts_file,
-					"options.strategy-option",
-					opts->xopts[i], "^$", 0);
-	}
+	for (size_t i = 0; i < opts->xopts.nr; i++)
+		res |= git_config_set_multivar_in_file_gently(opts_file,
+				"options.strategy-option",
+				opts->xopts.v[i], "^$", 0);
 	if (opts->allow_rerere_auto)
 		res |= git_config_set_in_file_gently(opts_file,
 				"options.allow-rerere-auto",
@@ -3627,14 +3628,14 @@ static int do_exec(struct repository *r, const char *command_line)
 			  "  git rebase --continue\n"
 			  "\n"),
 			command_line,
-			dirty ? N_("and made changes to the index and/or the "
-				"working tree\n") : "");
+			dirty ? _("and made changes to the index and/or the "
+				"working tree.\n") : "");
 		if (status == 127)
 			/* command not found */
 			status = 1;
 	} else if (dirty) {
 		warning(_("execution succeeded: %s\nbut "
-			  "left changes to the index and/or the working tree\n"
+			  "left changes to the index and/or the working tree.\n"
 			  "Commit or stash your changes, and then run\n"
 			  "\n"
 			  "  git rebase --continue\n"
@@ -3879,7 +3880,7 @@ static int do_merge(struct repository *r,
 	struct commit *head_commit, *merge_commit, *i;
 	struct commit_list *bases, *j;
 	struct commit_list *to_merge = NULL, **tail = &to_merge;
-	const char *strategy = !opts->xopts_nr &&
+	const char *strategy = !opts->xopts.nr &&
 		(!opts->strategy ||
 		 !strcmp(opts->strategy, "recursive") ||
 		 !strcmp(opts->strategy, "ort")) ?
@@ -4063,9 +4064,9 @@ static int do_merge(struct repository *r,
 			strvec_push(&cmd.args, "octopus");
 		else {
 			strvec_push(&cmd.args, strategy);
-			for (k = 0; k < opts->xopts_nr; k++)
+			for (k = 0; k < opts->xopts.nr; k++)
 				strvec_pushf(&cmd.args,
-					     "-X%s", opts->xopts[k]);
+					     "-X%s", opts->xopts.v[k]);
 		}
 		if (!(flags & TODO_EDIT_MERGE_MSG))
 			strvec_push(&cmd.args, "--no-edit");
@@ -4271,7 +4272,7 @@ void todo_list_filter_update_refs(struct repository *r,
 		if (!is_null_oid(&rec->after))
 			continue;
 
-		for (j = 0; !found && j < todo_list->total_nr; j++) {
+		for (j = 0; !found && j < todo_list->nr; j++) {
 			struct todo_item *item = &todo_list->items[j];
 			const char *arg = todo_list->buf.buf + item->arg_offset;
 
@@ -4301,7 +4302,7 @@ void todo_list_filter_update_refs(struct repository *r,
 	 * For each todo_item, check if its ref is in the update_refs list.
 	 * If not, then add it as an un-updated ref.
 	 */
-	for (i = 0; i < todo_list->total_nr; i++) {
+	for (i = 0; i < todo_list->nr; i++) {
 		struct todo_item *item = &todo_list->items[i];
 		const char *arg = todo_list->buf.buf + item->arg_offset;
 		int j, found = 0;
@@ -6149,7 +6150,8 @@ int complete_action(struct repository *r, struct replay_opts *opts, unsigned fla
 	todo_list_to_strbuf(r, &new_todo, &buf2, -1, 0);
 	strbuf_swap(&new_todo.buf, &buf2);
 	strbuf_release(&buf2);
-	new_todo.total_nr -= new_todo.nr;
+	/* Nothing is done yet, and we're reparsing, so let's reset the count */
+	new_todo.total_nr = 0;
 	if (todo_list_parse_insn_buffer(r, new_todo.buf.buf, &new_todo) < 0)
 		BUG("invalid todo list after expanding IDs:\n%s",
 		    new_todo.buf.buf);
